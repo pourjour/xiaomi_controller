@@ -211,16 +211,16 @@ void parse_and_map_report(const char* report, DWORD report_size, PHIDP_PREPARSED
 
 				switch (usage) {
 					case 0x30: // Left Stick X
-						xbox_report.sThumbLX = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32768, 32767));
+						xbox_report.sThumbLX = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32767, 32767));
 						break;
 					case 0x31: // Left Stick Y
-						xbox_report.sThumbLY = static_cast<SHORT>(-scale_axis(static_cast<long>(value), lmin, lmax, -32768, 32767)); // Invert Y-axis
+						xbox_report.sThumbLY = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32767, 32767));
 						break;
 					case 0x32: // Right Stick X (Sometimes Z-Axis)
-						xbox_report.sThumbRX = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32768, 32767));
+						xbox_report.sThumbRX = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32767, 32767));
 						break;
 					case 0x35: // Right Stick Y (Sometimes Z-Rotation)
-						xbox_report.sThumbRY = static_cast<SHORT>(-scale_axis(static_cast<long>(value), lmin, lmax, -32768, 32767)); // Invert Y-axis
+						xbox_report.sThumbRY = static_cast<SHORT>(scale_axis(static_cast<long>(value), lmin, lmax, -32767, 32767));
 						break;
 					case 0x33: // Left Trigger? (Sometimes Rx)
 					case 0x36: // Slider (Alternative trigger mapping)
