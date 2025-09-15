@@ -19,6 +19,7 @@
 std::optional<HANDLE> find_xiaomi_gamepad(USHORT vendor_id, USHORT product_id);
 void parse_and_map_report(const char* report, DWORD report_size, PHIDP_PREPARSED_DATA preparsed_data, XUSB_REPORT& xbox_report);
 long scale_axis(long value, long hid_min, long hid_max, long xbox_min, long xbox_max);
+VOID CALLBACK xiaomi_rumble_callback(PVIGEM_CLIENT Client, PVIGEM_TARGET Target, UCHAR LargeMotor, UCHAR SmallMotor, UCHAR LedNumber, PVOID UserData);
 
 int main() {
 	std::cout << "Xiaomi Controller to Xbox 360 Emulator" << std::endl;
@@ -67,6 +68,10 @@ int main() {
 	}
 	HANDLE gamepad_handle = *gamepad_handle_opt;
 	std::cout << "Xiaomi gamepad found!" << std::endl;
+
+	// --- Set up rumble callback ---
+	vigem_target_x360_register_notification(client, pad, xiaomi_rumble_callback, gamepad_handle);
+	std::cout << "Rumble support enabled." << std::endl;
 
 	// --- 4. Get HID Info ---
 	PHIDP_PREPARSED_DATA preparsed_data;
@@ -271,4 +276,18 @@ long scale_axis(long value, long hid_min, long hid_max, long xbox_min, long xbox
 
 	double normalized_value = static_cast<double>(value - hid_min) / static_cast<double>(hid_range);
 	return static_cast<long>(normalized_value * xbox_range + xbox_min);
+}
+
+VOID CALLBACK xiaomi_rumble_callback(PVIGEM_CLIENT Client, PVIGEM_TARGET Target, UCHAR LargeMotor, UCHAR SmallMotor, UCHAR LedNumber, PVOID UserData) {
+	HANDLE gamepad_handle = static_cast<HANDLE>(UserData);
+	if (gamepad_handle == INVALID_HANDLE_VALUE) {
+		return;
+	}
+
+	// Xiaomi rumble packet: [0x20, small_motor, large_motor]
+	BYTE rumble_packet[3] = { 0x20, SmallMotor, LargeMotor };
+	DWORD bytes_written;
+
+	// Send rumble packet using WriteFile (output report method)
+	WriteFile(gamepad_handle, rumble_packet, sizeof(rumble_packet), &bytes_written, NULL);
 } 
