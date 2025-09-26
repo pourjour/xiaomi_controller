@@ -37,7 +37,7 @@ The emulator has been successfully tested with:
 ### Required Dependencies
 
 1. **ViGEmBus Driver**
-   - Download and install from: [ViGEmBus Releases](https://github.com/ViGEm/ViGEmBus/releases)
+   - Download and install from: [ViGEmBus Releases](https://github.com/nefarius/ViGEmBus/releases)
    - This driver enables virtual gamepad emulation on Windows
 
 2. **Visual Studio Build Tools** (for building from source)
@@ -188,7 +188,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Acknowledgments
 
-- [ViGEm](https://vigem.org/) - Virtual Gamepad Emulation Framework
+- [ViGEm](https://vigembusdriver.com/) - Virtual Gamepad Emulation Framework
 - [Microsoft Windows SDK](https://developer.microsoft.com/en-us/windows/downloads/windows-sdk/) - HID and SetupAPI libraries
 - Xiaomi for creating an affordable gaming controller
 
