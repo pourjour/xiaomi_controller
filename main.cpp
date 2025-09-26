@@ -4,6 +4,7 @@
 #include <optional>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include <Windows.h>
 #include <ViGEm/Client.h>
 
@@ -20,9 +21,11 @@ std::optional<HANDLE> find_xiaomi_gamepad(USHORT vendor_id, USHORT product_id);
 void parse_and_map_report(const char* report, DWORD report_size, PHIDP_PREPARSED_DATA preparsed_data, XUSB_REPORT& xbox_report);
 long scale_axis(long value, long hid_min, long hid_max, long xbox_min, long xbox_max);
 VOID CALLBACK xiaomi_rumble_callback(PVIGEM_CLIENT Client, PVIGEM_TARGET Target, UCHAR LargeMotor, UCHAR SmallMotor, UCHAR LedNumber, PVOID UserData);
+bool initialize_xiaomi_device(HANDLE& gamepad_handle, PHIDP_PREPARSED_DATA& preparsed_data, std::vector<char>& report_buffer, USHORT vendor_id, USHORT product_id);
+void cleanup_xiaomi_device(HANDLE& gamepad_handle, PHIDP_PREPARSED_DATA& preparsed_data);
 
 int main() {
-	std::cout << "Xiaomi Controller to Xbox 360 Emulator" << std::endl;
+	std::cout << "Xiaomi Controller to Xbox 360 Emulator with Auto-Reconnect" << std::endl;
 
 	// --- 1. Initialize ViGEm client ---
 	const auto client = vigem_alloc();
@@ -49,64 +52,88 @@ int main() {
 	}
 	std::cout << "Virtual Xbox 360 controller created." << std::endl;
 
-	// --- 3. Find the physical Xiaomi gamepad ---
+	// --- 3. Device parameters ---
 	USHORT vendor_id = 0x2717;
 	USHORT product_id = 0x5067;
-	
-	std::cout << "Searching for Xiaomi gamepad (VID: 0x" << std::hex << vendor_id << ", PID: 0x" << product_id << ")..." << std::endl;
-	
-	std::optional<HANDLE> gamepad_handle_opt = find_xiaomi_gamepad(vendor_id, product_id);
 
-	if (!gamepad_handle_opt) {
-		std::cerr << "Xiaomi gamepad not found. Please ensure it is connected." << std::endl;
-		vigem_target_remove(client, pad);
-		vigem_target_free(pad);
-		vigem_disconnect(client);
-		vigem_free(client);
-		system("pause");
-		return -1;
-	}
-	HANDLE gamepad_handle = *gamepad_handle_opt;
-	std::cout << "Xiaomi gamepad found!" << std::endl;
+	HANDLE gamepad_handle = INVALID_HANDLE_VALUE;
+	PHIDP_PREPARSED_DATA preparsed_data = nullptr;
+	std::vector<char> report_buffer;
+	bool is_connected = false;
+	int reconnect_attempts = 0;
+	const int max_reconnect_delay = 5; // Max seconds between reconnect attempts
 
-	// --- Set up rumble callback ---
-	vigem_target_x360_register_notification(client, pad, xiaomi_rumble_callback, gamepad_handle);
-	std::cout << "Rumble support enabled." << std::endl;
-
-	// --- 4. Get HID Info ---
-	PHIDP_PREPARSED_DATA preparsed_data;
-	if (!HidD_GetPreparsedData(gamepad_handle, &preparsed_data)) {
-		std::cerr << "Error: HidD_GetPreparsedData failed." << std::endl;
-		CloseHandle(gamepad_handle);
-		// ... vigem cleanup
-		return -1;
-	}
-
-	HIDP_CAPS caps;
-	HidP_GetCaps(preparsed_data, &caps);
-	std::vector<char> report_buffer(caps.InputReportByteLength);
-
-	// --- 5. Main emulation loop ---
+	// --- 4. Main emulation loop with reconnection logic ---
 	XUSB_REPORT xbox_report;
 	XUSB_REPORT_INIT(&xbox_report);
 
-	std::cout << "Starting emulation loop. Press Ctrl+C to exit." << std::endl;
+	std::cout << "Starting emulation loop with auto-reconnect. Press Ctrl+C to exit." << std::endl;
+
 	while (true) {
-		DWORD bytes_read;
-		if (ReadFile(gamepad_handle, report_buffer.data(), static_cast<DWORD>(report_buffer.size()), &bytes_read, NULL)) {
-			if (bytes_read > 0) {
-				parse_and_map_report(report_buffer.data(), bytes_read, preparsed_data, xbox_report);
-				vigem_target_x360_update(client, pad, xbox_report);
+		// Try to connect if not connected
+		if (!is_connected) {
+			if (reconnect_attempts > 0) {
+				int delay = (std::min)(reconnect_attempts, max_reconnect_delay);
+				std::cout << "Reconnection attempt #" << reconnect_attempts << " in " << delay << " seconds..." << std::endl;
+				std::this_thread::sleep_for(std::chrono::seconds(delay));
 			}
-		} else {
-			 std::cerr << "Error reading from gamepad. Error code: " << GetLastError() << std::endl;
-			 std::this_thread::sleep_for(std::chrono::seconds(1)); // Avoid spamming errors
+
+			std::cout << "Searching for Xiaomi gamepad (VID: 0x" << std::hex << vendor_id << ", PID: 0x" << product_id << ")..." << std::endl;
+
+			if (initialize_xiaomi_device(gamepad_handle, preparsed_data, report_buffer, vendor_id, product_id)) {
+				is_connected = true;
+				reconnect_attempts = 0;
+				std::cout << "Xiaomi gamepad connected successfully!" << std::endl;
+
+				// Re-register rumble callback with new handle
+				vigem_target_x360_unregister_notification(pad);
+				vigem_target_x360_register_notification(client, pad, xiaomi_rumble_callback, gamepad_handle);
+				std::cout << "Rumble support re-enabled." << std::endl;
+			} else {
+				reconnect_attempts++;
+				if (reconnect_attempts == 1) {
+					std::cerr << "Xiaomi gamepad not found. Will keep trying to reconnect..." << std::endl;
+				}
+				continue;
+			}
+		}
+
+		// Read and process input
+		if (is_connected) {
+			DWORD bytes_read;
+			if (ReadFile(gamepad_handle, report_buffer.data(), static_cast<DWORD>(report_buffer.size()), &bytes_read, NULL)) {
+				if (bytes_read > 0) {
+					parse_and_map_report(report_buffer.data(), bytes_read, preparsed_data, xbox_report);
+					vigem_target_x360_update(client, pad, xbox_report);
+				}
+			} else {
+				DWORD error = GetLastError();
+				// Check if device was disconnected
+				if (error == ERROR_DEVICE_NOT_CONNECTED || error == ERROR_INVALID_HANDLE ||
+				    error == ERROR_FILE_NOT_FOUND || error == ERROR_BAD_COMMAND) {
+					std::cerr << "Xiaomi gamepad disconnected. Error code: " << error << std::endl;
+
+					// Clean up current connection
+					cleanup_xiaomi_device(gamepad_handle, preparsed_data);
+					is_connected = false;
+					reconnect_attempts = 0;
+
+					// Reset Xbox controller state to neutral
+					XUSB_REPORT_INIT(&xbox_report);
+					vigem_target_x360_update(client, pad, xbox_report);
+				} else {
+					// Other read error, try to continue
+					std::cerr << "Error reading from gamepad. Error code: " << error << std::endl;
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				}
+			}
 		}
 	}
 
-	// --- 6. Cleanup ---
-	CloseHandle(gamepad_handle);
-	HidD_FreePreparsedData(preparsed_data);
+	// --- Cleanup (unreachable in normal operation) ---
+	if (is_connected) {
+		cleanup_xiaomi_device(gamepad_handle, preparsed_data);
+	}
 	vigem_target_remove(client, pad);
 	vigem_target_free(pad);
 	vigem_disconnect(client);
@@ -276,6 +303,51 @@ long scale_axis(long value, long hid_min, long hid_max, long xbox_min, long xbox
 
 	double normalized_value = static_cast<double>(value - hid_min) / static_cast<double>(hid_range);
 	return static_cast<long>(normalized_value * xbox_range + xbox_min);
+}
+
+bool initialize_xiaomi_device(HANDLE& gamepad_handle, PHIDP_PREPARSED_DATA& preparsed_data,
+                              std::vector<char>& report_buffer, USHORT vendor_id, USHORT product_id) {
+	// Find the device
+	std::optional<HANDLE> handle_opt = find_xiaomi_gamepad(vendor_id, product_id);
+	if (!handle_opt) {
+		return false;
+	}
+
+	gamepad_handle = *handle_opt;
+
+	// Get HID preparsed data
+	if (!HidD_GetPreparsedData(gamepad_handle, &preparsed_data)) {
+		std::cerr << "Error: HidD_GetPreparsedData failed." << std::endl;
+		CloseHandle(gamepad_handle);
+		gamepad_handle = INVALID_HANDLE_VALUE;
+		return false;
+	}
+
+	// Get capabilities and allocate buffer
+	HIDP_CAPS caps;
+	if (HidP_GetCaps(preparsed_data, &caps) != HIDP_STATUS_SUCCESS) {
+		std::cerr << "Error: HidP_GetCaps failed." << std::endl;
+		HidD_FreePreparsedData(preparsed_data);
+		CloseHandle(gamepad_handle);
+		gamepad_handle = INVALID_HANDLE_VALUE;
+		preparsed_data = nullptr;
+		return false;
+	}
+
+	report_buffer.resize(caps.InputReportByteLength);
+	return true;
+}
+
+void cleanup_xiaomi_device(HANDLE& gamepad_handle, PHIDP_PREPARSED_DATA& preparsed_data) {
+	if (gamepad_handle != INVALID_HANDLE_VALUE) {
+		CloseHandle(gamepad_handle);
+		gamepad_handle = INVALID_HANDLE_VALUE;
+	}
+
+	if (preparsed_data != nullptr) {
+		HidD_FreePreparsedData(preparsed_data);
+		preparsed_data = nullptr;
+	}
 }
 
 VOID CALLBACK xiaomi_rumble_callback(PVIGEM_CLIENT Client, PVIGEM_TARGET Target, UCHAR LargeMotor, UCHAR SmallMotor, UCHAR LedNumber, PVOID UserData) {
